@@ -16,13 +16,13 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
-
+import argparse
 from checkpoint_utils import save_checkpoint, maybe_resume, keep_last_n_checkpoints
 
 
 
 
-
+#Get this from Zenodo
 label_dict = pickle.load(open("multiclass_labels.pkl", "rb"))
 
 
@@ -47,7 +47,7 @@ threshold_class = n_classes - 2
 
 
 class DistogramDataset(Dataset):
-    def __init__(self, labels, pkl_dir, n_classes, one_hot=True, all_pairs=False, two_d=False, n_samples_per_target=1, half=False,sample_pkls=True,sample_pattern='*',parallel_load=True): 
+    def __init__(self, labels, pkl_dir, n_classes, one_hot=True, all_pairs=False, two_d=False, n_samples_per_target=1, half=False,use_pae=True,sample_pkls=True,sample_pattern='*',parallel_load=True): 
         self.labels = labels
         self.one_hot = one_hot
         self.n_classes = n_classes
@@ -55,7 +55,7 @@ class DistogramDataset(Dataset):
         self.all_pairs = all_pairs if not self.two_d else True
         self.normalize = True
         self.n_samples_per_target = n_samples_per_target
-
+        self.use_pae = use_pae
         self.masks = dict()
         self.targets = list(labels.keys())
         self.pkl_dir = pkl_dir
@@ -106,7 +106,7 @@ class DistogramDataset(Dataset):
                     if half:
                         dgram = dgram.astype("float16")
 
-                    if "predicted_aligned_error" in pkl:
+                    if self.use_pae and "predicted_aligned_error" in pkl:
                         pae = pkl["predicted_aligned_error"][..., None]
                         if half:
                             pae = pae.astype("float16")
@@ -164,6 +164,7 @@ class DistogramDataset(Dataset):
             labels1 = np.where(labels == 1)[0]
             labels2 = np.where(labels == 2)[0]
             if labels0.shape[0] > 0:
+                print(f"Sampling {labels0.shape[0]} from {labels1.shape[0]} and {labels2.shape[0]} for target {target}")
                 labels1 = np.random.choice(labels1, labels0.shape[0])
                 labels2 = np.random.choice(labels2, labels0.shape[0])
                 labels = labels[np.concatenate((labels0, labels1, labels2))]
@@ -185,7 +186,7 @@ class DistogramDataset(Dataset):
             dgram /= 10.0
         if half:
             dgram = dgram.astype("float16")
-        if "predicted_aligned_error" in pkl:
+        if self.use_pae and "predicted_aligned_error" in pkl:
             pae = pkl["predicted_aligned_error"][..., None]
             if half:
                 pae = pae.astype("float16")
@@ -211,11 +212,11 @@ class Permute(nn.Module):
 
 
 class MLP(nn.Module):
-    def __init__(self, n_classes):
+    def __init__(self, n_classes, in_channels=65):
         super().__init__()
         self.n_classes = n_classes
         self.layers = nn.Sequential(
-            nn.Linear(65, 32),
+            nn.Linear(in_channels, 32),
             nn.Tanh(),
             #nn.Dropout(p=0.2),
             nn.Linear(32, 8),
@@ -229,11 +230,11 @@ class MLP(nn.Module):
 
 
 class Conv(nn.Module):
-    def __init__(self, n_classes):
+    def __init__(self, n_classes,in_channels=65):
         super().__init__()
         self.n_classes = n_classes
         self.layers = nn.Sequential(
-            nn.Linear(65, 32),
+            nn.Linear(in_channels, 32),
             nn.Tanh(),
             nn.Linear(32, 8),
             nn.Tanh(),
@@ -256,15 +257,34 @@ def plot_pr(precision, recall):
     plt.savefig(f"plots/{target}_{e}.png")
     plt.clf()
 
+parser = argparse.ArgumentParser()
+parser.add_argument('target')
+parser.add_argument('--pkl-dir', default='/proj/wallner-b/users/x_bjowa/distogram_training/cfold2_trimmed/AF_models_dropout/')
+parser.add_argument('--training-to-use', type=int, default=10)
+parser.add_argument('--half-precision', action='store_true', default=True)
+parser.add_argument('--use-pae', action='store_true')
+parser.add_argument('--network_type', type=str, default='2dconv')
+parser.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
+args = parser.parse_args()
 
-target = argv[1]
-pkl_dir = '/proj/wallner-b/users/x_bjowa/distogram_training/cfold2_trimmed/AF_models_dropout/' #argv[2]
-#prefix = argv[3] # will set based on the setting to make it more reproducible and easier to track
-training_to_use=10
-if len(argv) > 2:
-    training_to_use = int(argv[2])
-half_precision = True
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
+target         = args.target
+pkl_dir        = args.pkl_dir
+training_to_use = args.training_to_use
+half_precision = args.half_precision
+device         = args.device
+use_pae        = args.use_pae
+network_type = args.network_type
+
+in_channels = 65 if use_pae else 64
+nopae = '_no_pae' if not use_pae else ''
+
+
+model_cls = Conv if network_type == '2dconv' else MLP
+model = model_cls(n_classes=n_classes, in_channels=in_channels)
+if half_precision:
+    model = model.half()
+model = model.cuda()
+
 
 
 
@@ -278,17 +298,18 @@ x5_pattern='*pred_[1]_*'  # select 1 pdb for each of 5 AF2 networks, total 5
 # sample_pattern,n_samples_per_target,prefix=x5_pattern,5,'2dconv_multi_x5_ensemble_all' 
 
 if training_to_use == 10:
-    sample_pattern,n_samples_per_target,prefix=x10_pattern,10,'2dconv_multi_x10_ensemble_all_fix_aucpr' #_same_training'
+    sample_pattern,n_samples_per_target,prefix=x10_pattern,10,f'{network_type}_multi_x10_ensemble_all_fix_aucpr{nopae}' 
     epochs = 300
 elif training_to_use == 5:
-    sample_pattern,n_samples_per_target,prefix=x5_pattern,5,'2dconv_multi_x5_ensemble_all'
+    sample_pattern,n_samples_per_target,prefix=x5_pattern,5,f'{network_type}_multi_x5_ensemble_all{nopae}'
     epochs = 300
 elif training_to_use == 1:
-    sample_pattern,n_samples_per_target,prefix='*',1,'2dconv_multi_x1_ensemble_all'
+    sample_pattern,n_samples_per_target,prefix='*',1,f'{network_type}_multi_x1_ensemble_all{nopae}'
     epochs = 300
 else:
     print(f"Invalid training_to_use value {training_to_use}, should be 1, 5, or 10")
     sys.exit()
+
 
 
 
@@ -308,18 +329,15 @@ train_dict = {key:value for key, value in label_dict.items() if key != target}
 val_dict = {key:value for key, value in label_dict.items() if key == target}
 assert target not in train_dict, "ERROR: Target protein in training dictionary"
 
-train_dataset = DistogramDataset(labels=train_dict, pkl_dir=pkl_dir, n_classes=n_classes, two_d=True, n_samples_per_target=n_samples_per_target, half=half_precision,sample_pkls=True,sample_pattern=sample_pattern)
+train_dataset = DistogramDataset(labels=train_dict, pkl_dir=pkl_dir, n_classes=n_classes, two_d=True, use_pae=use_pae, n_samples_per_target=n_samples_per_target, half=half_precision,sample_pkls=True,sample_pattern=sample_pattern)
 #Will use all samples for validation as well, but won't randomize which ones. Will save outputs for all samples and ensemble them at the end.
-val_dataset = DistogramDataset(labels=val_dict, pkl_dir=pkl_dir, n_classes=n_classes, two_d=True, one_hot=False, n_samples_per_target=20, half=half_precision,sample_pkls=False)
+val_dataset = DistogramDataset(labels=val_dict, pkl_dir=pkl_dir, n_classes=n_classes, two_d=True, one_hot=False, use_pae=use_pae, n_samples_per_target=20, half=half_precision,sample_pkls=False)
 
 train_dataloader = DataLoader(train_dataset, batch_size=1, shuffle=True, pin_memory=True) #, num_workers=8, prefetch_factor=16)
 val_dataloader = DataLoader(val_dataset, batch_size=1, shuffle=False, pin_memory=True)#, num_workers=8, prefetch_factor=16)
 
 
-if half_precision:
-    model = Conv(n_classes=n_classes).half().cuda()
-else:
-    model = Conv(n_classes=n_classes).cuda()
+
 
 class_weights = [1.0 for i in range(n_classes)]
 class_weights = torch.FloatTensor(class_weights).cuda()
