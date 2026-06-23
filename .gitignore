@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+
+# Training outputs
+checkpoints_*/
+plots_*/
+pickles_*/
+metrics_*/
+
+# Data
+*.pkl
+
+# Slurm
+*.out
+*.err
+slurm-*.out
