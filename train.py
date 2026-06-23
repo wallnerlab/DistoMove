@@ -262,8 +262,8 @@ parser.add_argument('target')
 parser.add_argument('--pkl-dir', default='/proj/wallner-b/users/x_bjowa/distogram_training/cfold2_trimmed/AF_models_dropout/')
 parser.add_argument('--training-to-use', type=int, default=10)
 parser.add_argument('--half-precision', action='store_true', default=True)
-parser.add_argument('--use-pae', action='store_true')
-parser.add_argument('--network_type', type=str, default='2dconv')
+parser.add_argument('--no-pae', action='store_true',default=False)
+parser.add_argument('--network_type', type=str, default='2dconv', choices=['2dconv', 'mlp'])
 parser.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
 args = parser.parse_args()
 
@@ -272,14 +272,17 @@ pkl_dir        = args.pkl_dir
 training_to_use = args.training_to_use
 half_precision = args.half_precision
 device         = args.device
-use_pae        = args.use_pae
+use_pae        = not args.no_pae
 network_type = args.network_type
 
 in_channels = 65 if use_pae else 64
 nopae = '_no_pae' if not use_pae else ''
 
 
-model_cls = Conv if network_type == '2dconv' else MLP
+model_cls = Conv if network_type == '2dconv' else MLP if network_type == 'mlp' else None
+if model_cls is None:
+    print(f"Invalid network_type {network_type}, should be '2dconv' or 'mlp'")
+    sys.exit()
 model = model_cls(n_classes=n_classes, in_channels=in_channels)
 if half_precision:
     model = model.half()
