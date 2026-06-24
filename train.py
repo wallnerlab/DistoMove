@@ -262,6 +262,7 @@ parser.add_argument('target')
 parser.add_argument('--pkl-dir', default='/proj/wallner-b/users/x_bjowa/distogram_training/cfold2_trimmed/AF_models_dropout/')
 parser.add_argument('--training-to-use', type=int, default=10)
 parser.add_argument('--half-precision', action='store_true', default=True)
+parser.add_argument('--epochs', type=int, default=300)
 parser.add_argument('--no-pae', action='store_true',default=False)
 parser.add_argument('--network_type', type=str, default='2dconv', choices=['2dconv', 'mlp'])
 parser.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
@@ -271,6 +272,7 @@ target         = args.target
 pkl_dir        = args.pkl_dir
 training_to_use = args.training_to_use
 half_precision = args.half_precision
+epochs         = args.epochs
 device         = args.device
 use_pae        = not args.no_pae
 network_type = args.network_type
@@ -302,18 +304,18 @@ x5_pattern='*pred_[1]_*'  # select 1 pdb for each of 5 AF2 networks, total 5
 
 if training_to_use == 10:
     sample_pattern,n_samples_per_target,prefix=x10_pattern,10,f'{network_type}_multi_x10_ensemble_all_fix_aucpr{nopae}' 
-    epochs = 300
 elif training_to_use == 5:
     sample_pattern,n_samples_per_target,prefix=x5_pattern,5,f'{network_type}_multi_x5_ensemble_all{nopae}'
-    epochs = 300
 elif training_to_use == 1:
     sample_pattern,n_samples_per_target,prefix='*',1,f'{network_type}_multi_x1_ensemble_all{nopae}'
-    epochs = 300
 else:
     print(f"Invalid training_to_use value {training_to_use}, should be 1, 5, or 10")
     sys.exit()
 
-
+final_checkpoint = f"checkpoints_{prefix}/{target}_epoch{epochs:04d}.pth"
+if os.path.exists(final_checkpoint):
+    print(f"Final checkpoint {final_checkpoint} already exists, skipping training for target {target}")
+    sys.exit()
 
 
 print(f"Using sample pattern {sample_pattern} with n_samples_per_target {n_samples_per_target} and prefix {prefix}")

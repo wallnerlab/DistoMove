@@ -5,4 +5,4 @@
 
 module load Mambaforge/23.3.1-1-hpc1-bdist; 
 conda activate /proj/beyondfold/apps/.conda/envs/pytorch_2.1.0
-python DistoMove/train.py.py "$@" 
+python DistoMove/train.py "$@" 
