@@ -24,7 +24,11 @@ from checkpoint_utils import save_checkpoint, maybe_resume, keep_last_n_checkpoi
 
 
 #Get this from Zenodo
-label_dict = pickle.load(open("multiclass_labels.pkl", "rb"))
+#label_dict = pickle.load(open("multiclass_labels.pkl", "rb"))
+label_dict_file='multiclass_label_dict_newpdb.pkl'
+label_dict = pickle.load(open(label_dict_file, "rb"))
+#remove _pdb keys (reference bins from make_labels.py) which are not needed (will crash)
+label_dict = {key: value for key, value in label_dict.items() if not key.endswith('_pdb')}
 
 
 #ensembles = 10
@@ -310,7 +314,9 @@ x5_pattern='*pred_[1]_*'  # select 1 pdb for each of 5 AF2 networks, total 5
 # sample_pattern,n_samples_per_target,prefix=x5_pattern,5,'2dconv_multi_x5_ensemble_all' 
 
 if training_to_use == 10:
-    sample_pattern,n_samples_per_target,prefix=x10_pattern,10,f'{network_type}_multi_x10_ensemble_all_fix_aucpr{nopae}' 
+    sample_pattern,n_samples_per_target,prefix=x10_pattern,10,f'{network_type}_multi_x10_ensemble_all_fix_aucpr{nopae}'
+    if label_dict_file == 'multiclass_label_dict_newpdb.pkl':
+        prefix = f'{network_type}_newpdb{nopae}'
 elif training_to_use == 5:
     sample_pattern,n_samples_per_target,prefix=x5_pattern,5,f'{network_type}_multi_x5_ensemble_all{nopae}'
 elif training_to_use == 1:
