@@ -16,7 +16,6 @@ do
 
     id=$(sbatch -A $proj -J "$f" ./submit_train.sh "$f" --network_type mlp | awk '{print $4}')      
     id=$(sbatch -A $proj -J "$f" -d afterany:$id ./submit_train.sh "$f" --network_type mlp | awk '{print $4}')     
-    id=$(sbatch -A $proj -J "$f" -d afterany:$id ./submit_train.sh "$f" --network_type mlp | awk '{print $4}')
 
 done
 

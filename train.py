@@ -1,4 +1,5 @@
 from sys import argv
+import tempfile
 from unittest import result
 import numpy as np
 import pickle
@@ -44,7 +45,13 @@ threshold_class = n_classes - 2
 #class_weights = 1 / class_frequencies
 
 
-
+def safe_save(d, path):
+    dir_ = os.path.dirname(path) or '.'
+    with tempfile.NamedTemporaryFile('wb', dir=dir_, delete=False) as tmp:
+        pickle.dump(d, tmp)
+        tmp_path = tmp.name
+    os.replace(tmp_path, path)  # atomic on Linux
+    
 
 class DistogramDataset(Dataset):
     def __init__(self, labels, pkl_dir, n_classes, one_hot=True, all_pairs=False, two_d=False, n_samples_per_target=1, half=False,use_pae=True,sample_pkls=True,sample_pattern='*',parallel_load=True): 
@@ -116,13 +123,13 @@ class DistogramDataset(Dataset):
 
                 self.all_dgram_logits.append(inputs_this_target)
         for key, labels in self.labels.items():
-            self.masks[key] = 1 - (labels == -1)
+            self.masks[key] = 1 - (labels < 0 ) # masking -1 and -2 (from ignore_regions.txt)
 
             quantized_labels = np.zeros_like(labels)
             #labels[labels >= (self.n_classes-1)] = self.n_classes - 1
             for i, thr in enumerate(thresholds):
                 quantized_labels[labels >= thr] = i
-            quantized_labels[labels == -1] = -1
+            quantized_labels[labels < 0] = -1
 
             if self.one_hot:
                 if self.all_pairs:
@@ -434,12 +441,15 @@ for e in range(start_epoch, epochs+1):
                 data.append(row)
 
             val_outputs /= (ensemble + 1)
-            pickle.dump({"out":np.squeeze(val_outputs.cpu()), 
-                         "labels":np.squeeze(val_labels.cpu())}, 
-                         open(f"pickles_{prefix}/{target}_{e}.pkl", "wb"))
+          #  pickle.dump({"out":np.squeeze(val_outputs.cpu()), 
+          #               "labels":np.squeeze(val_labels.cpu())}, 
+          #               open(f"pickles_{prefix}/{target}_{e}.pkl", "wb"))
+            safe_save({"out":np.squeeze(val_outputs.cpu()), 
+                         "labels":np.squeeze(val_labels.cpu())},
+                         f"pickles_{prefix}/{target}_{e}.pkl")  # atomic save
 
-            pickle.dump(data, open(f"pickles_{prefix}/{target}_{e}_all.pkl", "wb"))
-
+            #pickle.dump(data, open(f"pickles_{prefix}/{target}_{e}_all.pkl", "wb"))
+            safe_save(data, f"pickles_{prefix}/{target}_{e}_all.pkl")  # atomic save to avoid partial writes
             # 2d plotting
             valid_ix = np.where(val_labels[0].cpu() >= 0)
             valid_ix = np.ix_(np.unique(valid_ix[0]), np.unique(valid_ix[1]))
