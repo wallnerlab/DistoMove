@@ -18,14 +18,15 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 import argparse
-from checkpoint_utils import save_checkpoint, maybe_resume, keep_last_n_checkpoints
+from checkpoint_utils import save_checkpoint, maybe_resume, keep_last_n_checkpoints, load_checkpoint
 
 
 
 
 #Get this from Zenodo
 #label_dict = pickle.load(open("multiclass_labels.pkl", "rb"))
-label_dict_file='multiclass_label_dict_newpdb.pkl'
+#label_dict_file='multiclass_label_dict_newpdb.pkl'
+label_dict_file='multiclass_label_dict_newpdb_now_correct.pkl' #labels from the PDB-mirror natives (cfold2_trimmed/newpdbs)
 label_dict = pickle.load(open(label_dict_file, "rb"))
 #remove _pdb keys (reference bins from make_labels.py) which are not needed (will crash)
 label_dict = {key: value for key, value in label_dict.items() if not key.endswith('_pdb')}
@@ -277,6 +278,7 @@ parser.add_argument('--epochs', type=int, default=300)
 parser.add_argument('--no-pae', action='store_true',default=False)
 parser.add_argument('--network_type', type=str, default='2dconv', choices=['2dconv', 'mlp'])
 parser.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
+parser.add_argument('--eval-epoch', type=int, default=None, help='only evaluate checkpoints_<prefix>/<target>_epoch<N>.pth: no training, no checkpoint writes')
 args = parser.parse_args()
 
 target         = args.target
@@ -317,6 +319,8 @@ if training_to_use == 10:
     sample_pattern,n_samples_per_target,prefix=x10_pattern,10,f'{network_type}_multi_x10_ensemble_all_fix_aucpr{nopae}'
     if label_dict_file == 'multiclass_label_dict_newpdb.pkl':
         prefix = f'{network_type}_newpdb{nopae}'
+    elif label_dict_file == 'multiclass_label_dict_newpdb_now_correct.pkl':
+        prefix = f'{network_type}_newpdb_now_correct{nopae}'
 elif training_to_use == 5:
     sample_pattern,n_samples_per_target,prefix=x5_pattern,5,f'{network_type}_multi_x5_ensemble_all{nopae}'
 elif training_to_use == 1:
@@ -326,7 +330,7 @@ else:
     sys.exit()
 
 final_checkpoint = f"checkpoints_{prefix}/{target}_epoch{epochs:04d}.pth"
-if os.path.exists(final_checkpoint):
+if os.path.exists(final_checkpoint) and args.eval_epoch is None:
     print(f"Final checkpoint {final_checkpoint} already exists, skipping training for target {target}")
     sys.exit()
 
@@ -347,11 +351,12 @@ train_dict = {key:value for key, value in label_dict.items() if key != target}
 val_dict = {key:value for key, value in label_dict.items() if key == target}
 assert target not in train_dict, "ERROR: Target protein in training dictionary"
 
-train_dataset = DistogramDataset(labels=train_dict, pkl_dir=pkl_dir, n_classes=n_classes, two_d=True, use_pae=use_pae, n_samples_per_target=n_samples_per_target, half=half_precision,sample_pkls=True,sample_pattern=sample_pattern)
+if args.eval_epoch is None: #training data is not needed when only evaluating
+    train_dataset = DistogramDataset(labels=train_dict, pkl_dir=pkl_dir, n_classes=n_classes, two_d=True, use_pae=use_pae, n_samples_per_target=n_samples_per_target, half=half_precision,sample_pkls=True,sample_pattern=sample_pattern)
+    train_dataloader = DataLoader(train_dataset, batch_size=1, shuffle=True, pin_memory=True) #, num_workers=8, prefetch_factor=16)
 #Will use all samples for validation as well, but won't randomize which ones. Will save outputs for all samples and ensemble them at the end.
 val_dataset = DistogramDataset(labels=val_dict, pkl_dir=pkl_dir, n_classes=n_classes, two_d=True, one_hot=False, use_pae=use_pae, n_samples_per_target=20, half=half_precision,sample_pkls=False)
 
-train_dataloader = DataLoader(train_dataset, batch_size=1, shuffle=True, pin_memory=True) #, num_workers=8, prefetch_factor=16)
 val_dataloader = DataLoader(val_dataset, batch_size=1, shuffle=False, pin_memory=True)#, num_workers=8, prefetch_factor=16)
 
 
@@ -365,9 +370,13 @@ optimizer = optim.Adam(model.parameters(), eps=1e-04)
 
 
 checkpoint_dir = f"checkpoints_{prefix}"
-start_epoch = maybe_resume(checkpoint_dir, target, model, optimizer=optimizer, device=device)
+if args.eval_epoch is None:
+    start_epoch = maybe_resume(checkpoint_dir, target, model, optimizer=optimizer, device=device)
+else:
+    load_checkpoint(f"{checkpoint_dir}/{target}_epoch{args.eval_epoch:04d}.pth", model, device=device)
+    start_epoch = epochs = args.eval_epoch
 
-if start_epoch >=epochs: #
+if start_epoch >=epochs and args.eval_epoch is None: #
     print(f"Checkpoint for epoch {start_epoch} already exists, which is >= total epochs {epochs}. Exiting.")
     sys.exit()
 auroc = AUROC(task="binary")
@@ -384,7 +393,7 @@ for e in range(start_epoch, epochs+1):
     train_acc = 0
     train_loss = 0
     model.train()
-    for i, data in enumerate(train_dataloader):
+    for i, data in enumerate(train_dataloader if args.eval_epoch is None else []):
 
         inputs, labels, mask, pkl_file = data
         inputs = inputs.cuda()
@@ -405,12 +414,14 @@ for e in range(start_epoch, epochs+1):
         train_acc += correct / labels.size(1) ** 2
         train_loss += loss
         #train_loss += loss.item() CHECK BEFORE UNCOMMENT . This is potentially more memory efficient since it doesn't keep the computation graph,
-    print(f"{datetime.datetime.now()}: Epoch {e} training accuracy: {train_acc/(i+1)}, training loss: {train_loss/(i+1)}")
+    if args.eval_epoch is None:
+        print(f"{datetime.datetime.now()}: Epoch {e} training accuracy: {train_acc/(i+1)}, training loss: {train_loss/(i+1)}")
 
     if e % 10 == 0:
-        avg_loss = train_loss/(i+1)
-        save_checkpoint(checkpoint_dir, model, optimizer, e, avg_loss, prefix, target)
-        keep_last_n_checkpoints(checkpoint_dir, target, n=50)
+        if args.eval_epoch is None:
+            avg_loss = train_loss/(i+1)
+            save_checkpoint(checkpoint_dir, model, optimizer, e, avg_loss, prefix, target)
+            keep_last_n_checkpoints(checkpoint_dir, target, n=50)
         auroc.reset()
         pc_curve.reset()
         roc.reset()

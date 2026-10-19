@@ -6,6 +6,7 @@ from Bio.Align import substitution_matrices
 from Bio.SeqUtils import seq1
 from Bio.PDB.PDBParser import PDBParser
 import pickle
+import os
 
 min_bin = 2.3125
 max_bin = 21.6875
@@ -165,7 +166,7 @@ def get_distogram(seq, pdb_file, verbose=False, substitution_matrix=None):
 af_output_path = "/proj/wallner-b/users/x_bjowa/distogram_training/cfold2_trimmed/AF_models_dropout"
 fastas_path = "/proj/wallner-b/users/x_bjowa/distogram_training/cfold2_trimmed/fastas/"
 #fasta_pdbs = pd.read_csv("/proj/wallner-b/users/x_bjowa/afsample3/cfold_protein_s0_s1.csv")
-fasta_pdbs = pd.read_csv("/proj/wallner-b/users/x_bjowa/distogram_training/cfold2_trimmed/cfold_protein_s0_s1_local.csv")
+fasta_pdbs = pd.read_csv("/proj/wallner-b/users/x_bjowa/distogram_training/cfold2_trimmed/cfold_protein_s0_s1_pdb.csv")
 ignore_regions_file = "/proj/wallner-b/users/x_bjowa/distogram_training/ignore_regions.txt"
 ignore_label = -2  # label for pairs in ignore_regions.txt: -1 = masked in train.py like missing residues, -2 = kept separate (not masked by train.py)
 
@@ -200,19 +201,23 @@ ignore_regions = read_ignore_regions(ignore_regions_file)
 label_dict = {}
 multiclass_label_dict = {}
 #check_list=["3O78","4OY4","4GJE"]
-check_list=["6MFS"]
+check_list=["4GJE"]
+verbose=False
 for index, row in fasta_pdbs.iterrows(): # [fasta_pdbs.protein == "3ZQE"]
     fasta_id = row["protein"]
     print(fasta_id)
-    if fasta_id not in check_list:
+    if verbose and fasta_id not in check_list:
         continue
     fasta_file = f"{fastas_path}/{fasta_id}.fasta"
     pdb1_file = row["s0"]
     pdb2_file = row["s1"]
+    if not (os.path.exists(pdb1_file) and os.path.exists(pdb2_file)):
+        print(f"WARNING: skipping {fasta_id}, native missing: {pdb1_file} {pdb2_file}")
+        continue
 
     seq = open(fasta_file).readlines()[-1].rstrip()
-    dgram1 = get_distogram(seq, pdb1_file)# ,verbose=True)#,substitution_matrix="BLOSUM62")
-    dgram2 = get_distogram(seq, pdb2_file)#,verbose=True)#,substitution_matrix="BLOSUM62")
+    dgram1 = get_distogram(seq, pdb1_file,verbose=verbose)#,substitution_matrix="BLOSUM62")
+    dgram2 = get_distogram(seq, pdb2_file,verbose=verbose)#,substitution_matrix="BLOSUM62")
 
     bins1 = np.argmax(dgram1, axis=-1)
     bins2 = np.argmax(dgram2, axis=-1)
@@ -244,5 +249,6 @@ for index, row in fasta_pdbs.iterrows(): # [fasta_pdbs.protein == "3ZQE"]
 #with open("labels.pkl", "wb") as f:
 #    pickle.dump(label_dict, f)
 
-with open("multiclass_label_dict_newpdb2.pkl", "wb") as f:
-    pickle.dump(multiclass_label_dict, f)
+if not verbose:
+    with open("multiclass_label_dict_newpdb_now_correct.pkl", "wb") as f:
+        pickle.dump(multiclass_label_dict, f)
