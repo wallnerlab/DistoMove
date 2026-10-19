@@ -50,11 +50,14 @@ threshold_class = n_classes - 2
 #class_weights = 1 / class_frequencies
 
 
+umask = os.umask(0); os.umask(umask)  # read once at start, before any threads
+
 def safe_save(d, path):
     dir_ = os.path.dirname(path) or '.'
     with tempfile.NamedTemporaryFile('wb', dir=dir_, delete=False) as tmp:
         pickle.dump(d, tmp)
         tmp_path = tmp.name
+    os.chmod(tmp_path, 0o666 & ~umask)  # NamedTemporaryFile is always 0600, use normal permissions instead
     os.replace(tmp_path, path)  # atomic on Linux
     
 
