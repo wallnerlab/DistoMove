@@ -467,6 +467,11 @@ for e in range(start_epoch, epochs+1):
 
             #pickle.dump(data, open(f"pickles_{prefix}/{target}_{e}_all.pkl", "wb"))
             safe_save(data, f"pickles_{prefix}/{target}_{e}_all.pkl")  # atomic save to avoid partial writes
+            #metrics and confusion matrix only on pairs with a label: -1 (missing) and -2 (ignore_regions.txt) are left out,
+            #not counted as negatives (the np.ix_ block below, rows x cols with any valid pair, also contains masked pairs)
+            valid = val_labels[0] >= 0
+            val_outputs_valid = val_outputs[0][valid]
+            val_labels_valid = val_labels[0][valid]
             # 2d plotting
             valid_ix = np.where(val_labels[0].cpu() >= 0)
             valid_ix = np.ix_(np.unique(valid_ix[0]), np.unique(valid_ix[1]))
@@ -482,9 +487,9 @@ for e in range(start_epoch, epochs+1):
 
             fig, axs = plt.subplots(1,3, figsize=(18, 5))
 
-            pred_labels = torch.argmax(val_outputs, -1).view(-1)
+            pred_labels = torch.argmax(val_outputs_valid, -1).view(-1)
 
-            cm = confmat(pred_labels, torch.clip(val_labels, 0, n_classes).view(-1))
+            cm = confmat(pred_labels, val_labels_valid.view(-1))
 
             axs[0].imshow(plot_labels)
             axs[1].imshow(torch.argmax(val_outputs, dim=-1).cpu()/(n_classes-1))
@@ -493,8 +498,8 @@ for e in range(start_epoch, epochs+1):
             plt.close()
 
             # 1d curves, binary metrics
-            pred_pos = torch.sum(val_outputs[..., threshold_class:], -1)
-            pos_labels = (val_labels >= threshold_class).int()
+            pred_pos = torch.sum(val_outputs_valid[..., threshold_class:], -1)
+            pos_labels = (val_labels_valid >= threshold_class).int()
 
             au = auroc(pred_pos, pos_labels)
             precision, recall, thresholds = pc_curve(pred_pos, pos_labels)
