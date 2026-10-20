@@ -470,11 +470,16 @@ for e in range(start_epoch, epochs+1):
 
             #pickle.dump(data, open(f"pickles_{prefix}/{target}_{e}_all.pkl", "wb"))
             safe_save(data, f"pickles_{prefix}/{target}_{e}_all.pkl")  # atomic save to avoid partial writes
-            #metrics and confusion matrix only on pairs with a label: -1 (missing) and -2 (ignore_regions.txt) are left out,
-            #not counted as negatives (the np.ix_ block below, rows x cols with any valid pair, also contains masked pairs)
-            valid = val_labels[0] >= 0
-            val_outputs_valid = val_outputs[0][valid]
-            val_labels_valid = val_labels[0][valid]
+            #metrics and confusion matrix on symmetrized probabilities, (p(i,j)+p(j,i))/2, one entry per pair (i<j), and only
+            #on pairs with a label: -1 (missing) and -2 (ignore_regions.txt) are left out, not counted as negatives
+            #(the np.ix_ block below, rows x cols with any valid pair, also contains masked pairs)
+            val_probs = torch.softmax(val_outputs[0].float(), -1)
+            val_probs = (val_probs + val_probs.transpose(0, 1)) / 2
+            iu = torch.triu_indices(*val_labels[0].shape, 1, device=val_probs.device)
+            labels_upper = val_labels[0][iu[0], iu[1]]
+            valid = labels_upper >= 0
+            val_outputs_valid = val_probs[iu[0], iu[1]][valid]
+            val_labels_valid = labels_upper[valid]
             # 2d plotting
             valid_ix = np.where(val_labels[0].cpu() >= 0)
             valid_ix = np.ix_(np.unique(valid_ix[0]), np.unique(valid_ix[1]))
@@ -508,7 +513,8 @@ for e in range(start_epoch, epochs+1):
             precision, recall, thresholds = pc_curve(pred_pos, pos_labels)
             roc_fpr, roc_tpr, roc_thresholds = roc(pred_pos, pos_labels)
             try:
-                top_k_acc = np.sum(((roc_tpr.cpu()[:k] - np.insert(roc_tpr.cpu()[:k-1], 0, 0)) > 0).numpy()) / k
+                #fraction positives among the k highest scoring pairs (the first roc point is (0,0) and is not a prediction)
+                top_k_acc = pos_labels[torch.argsort(pred_pos, descending=True)[:k]].float().mean().item()
             except:
                 top_k_acc = -1
 
