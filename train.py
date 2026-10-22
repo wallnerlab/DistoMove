@@ -61,8 +61,21 @@ def safe_save(d, path):
     os.replace(tmp_path, path)  # atomic on Linux
     
 
+def distogram_spread(logits, bin_edges):
+    """Standard deviation (A) of the distance under the distogram of one model, per residue pair.
+    Bin centers between the edges, and half a bin width outside the first and last edge."""
+    edges = np.asarray(bin_edges, dtype=np.float64)
+    width = edges[1] - edges[0]
+    centers = np.concatenate(([edges[0] - width / 2], (edges[:-1] + edges[1:]) / 2, [edges[-1] + width / 2]))
+    logits = np.asarray(logits, dtype=np.float32)
+    probs = np.exp(logits - logits.max(-1, keepdims=True))
+    probs /= probs.sum(-1, keepdims=True)
+    mean = probs @ centers
+    return np.sqrt(np.clip(probs @ centers ** 2 - mean ** 2, 0, None)).astype(np.float32)
+
+
 class DistogramDataset(Dataset):
-    def __init__(self, labels, pkl_dir, n_classes, one_hot=True, all_pairs=False, two_d=False, n_samples_per_target=1, half=False,use_pae=True,sample_pkls=True,sample_pattern='*',parallel_load=True): 
+    def __init__(self, labels, pkl_dir, n_classes, one_hot=True, all_pairs=False, two_d=False, n_samples_per_target=1, half=False,use_pae=True,sample_pkls=True,sample_pattern='*',parallel_load=True,use_spread=False): 
         self.labels = labels
         self.one_hot = one_hot
         self.n_classes = n_classes
@@ -71,6 +84,7 @@ class DistogramDataset(Dataset):
         self.normalize = True
         self.n_samples_per_target = n_samples_per_target
         self.use_pae = use_pae
+        self.use_spread = use_spread
         self.masks = dict()
         self.targets = list(labels.keys())
         self.pkl_dir = pkl_dir
@@ -114,20 +128,7 @@ class DistogramDataset(Dataset):
                 inputs_this_target = []
                 print(f"{idx} Processing target {self.targets[idx]} with {len(pkl_paths_this_target)} pkls")
                 for pkl_path in pkl_paths_this_target:
-                    pkl = pickle.load(open(pkl_path, "rb"))
-                    dgram = pkl["distogram"]["logits"]
-                    if self.normalize:
-                        dgram /= 10.0
-                    if half:
-                        dgram = dgram.astype("float16")
-
-                    if self.use_pae and "predicted_aligned_error" in pkl:
-                        pae = pkl["predicted_aligned_error"][..., None]
-                        if half:
-                            pae = pae.astype("float16")
-
-                        dgram = np.concatenate((dgram, pae), axis=-1)
-                    inputs_this_target.append(dgram)
+                    inputs_this_target.append(self._load_pkl(pkl_path, half))
 
                 self.all_dgram_logits.append(inputs_this_target)
         for key, labels in self.labels.items():
@@ -197,6 +198,8 @@ class DistogramDataset(Dataset):
     def _load_pkl(self, pkl_path, half):
         pkl = pickle.load(open(pkl_path, "rb"))
         dgram = pkl["distogram"]["logits"]
+        if self.use_spread:
+            spread = distogram_spread(dgram, pkl["distogram"]["bin_edges"])[..., None]
         if self.normalize:
             dgram /= 10.0
         if half:
@@ -206,6 +209,8 @@ class DistogramDataset(Dataset):
             if half:
                 pae = pae.astype("float16")
             dgram = np.concatenate((dgram, pae), axis=-1)
+        if self.use_spread:
+            dgram = np.concatenate((dgram, spread.astype(dgram.dtype)), axis=-1)
         return dgram
 
     def _load_target(self, idx, pkl_paths_this_target, half):
@@ -279,6 +284,7 @@ parser.add_argument('--training-to-use', type=int, default=10)
 parser.add_argument('--half-precision', action='store_true', default=True)
 parser.add_argument('--epochs', type=int, default=300)
 parser.add_argument('--no-pae', action='store_true',default=False)
+parser.add_argument('--spread', action='store_true', default=False, help='add the distogram spread of each AF2 model as an input channel')
 parser.add_argument('--network_type', type=str, default='2dconv', choices=['2dconv', 'mlp'])
 parser.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
 parser.add_argument('--eval-epoch', type=int, default=None, help='only evaluate checkpoints_<prefix>/<target>_epoch<N>.pth: no training, no checkpoint writes')
@@ -291,10 +297,11 @@ half_precision = args.half_precision
 epochs         = args.epochs
 device         = args.device
 use_pae        = not args.no_pae
+use_spread     = args.spread
 network_type = args.network_type
 
-in_channels = 65 if use_pae else 64
-nopae = '_no_pae' if not use_pae else ''
+in_channels = 64 + use_pae + use_spread
+nopae = ('_no_pae' if not use_pae else '') + ('_spread' if use_spread else '')
 
 
 model_cls = Conv if network_type == '2dconv' else MLP if network_type == 'mlp' else None
@@ -355,10 +362,10 @@ val_dict = {key:value for key, value in label_dict.items() if key == target}
 assert target not in train_dict, "ERROR: Target protein in training dictionary"
 
 if args.eval_epoch is None: #training data is not needed when only evaluating
-    train_dataset = DistogramDataset(labels=train_dict, pkl_dir=pkl_dir, n_classes=n_classes, two_d=True, use_pae=use_pae, n_samples_per_target=n_samples_per_target, half=half_precision,sample_pkls=True,sample_pattern=sample_pattern)
+    train_dataset = DistogramDataset(labels=train_dict, pkl_dir=pkl_dir, n_classes=n_classes, two_d=True, use_pae=use_pae, use_spread=use_spread, n_samples_per_target=n_samples_per_target, half=half_precision,sample_pkls=True,sample_pattern=sample_pattern)
     train_dataloader = DataLoader(train_dataset, batch_size=1, shuffle=True, pin_memory=True) #, num_workers=8, prefetch_factor=16)
 #Will use all samples for validation as well, but won't randomize which ones. Will save outputs for all samples and ensemble them at the end.
-val_dataset = DistogramDataset(labels=val_dict, pkl_dir=pkl_dir, n_classes=n_classes, two_d=True, one_hot=False, use_pae=use_pae, n_samples_per_target=20, half=half_precision,sample_pkls=False)
+val_dataset = DistogramDataset(labels=val_dict, pkl_dir=pkl_dir, n_classes=n_classes, two_d=True, one_hot=False, use_pae=use_pae, use_spread=use_spread, n_samples_per_target=20, half=half_precision,sample_pkls=False)
 
 val_dataloader = DataLoader(val_dataset, batch_size=1, shuffle=False, pin_memory=True)#, num_workers=8, prefetch_factor=16)
 
